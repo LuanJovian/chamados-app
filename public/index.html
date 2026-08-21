@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Chamados de Suporte Técnico</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<div id="banner-offline" class="banner-offline hidden">
+  ⚠️ Armazenamento indisponível no momento. Verifique a conexão com o banco de dados e tente novamente.
+</div>
+
+<header class="app-header">
+  <h1>🎫 Chamados de Suporte Técnico</h1>
+  <p class="subtitle">Cadastro, consulta e acompanhamento de chamados</p>
+</header>
+
+<main class="container">
+
+  <!-- Cadastro de chamado -->
+  <section class="card">
+    <h2>Novo chamado</h2>
+    <form id="form-novo-chamado" novalidate>
+      <div class="campo">
+        <label for="solicitante">Solicitante *</label>
+        <input type="text" id="solicitante" name="solicitante" placeholder="Nome do solicitante" />
+      </div>
+      <div class="campo">
+        <label for="descricao">Descrição *</label>
+        <textarea id="descricao" name="descricao" rows="3" placeholder="Descreva o problema ou solicitação"></textarea>
+      </div>
+      <div class="acoes">
+        <button type="submit" class="btn btn-primario">Cadastrar chamado</button>
+      </div>
+      <div id="erro-novo-chamado" class="mensagem-erro hidden"></div>
+    </form>
+  </section>
+
+  <!-- Localizar / filtrar chamados -->
+  <section class="card">
+    <h2>Localizar chamados</h2>
+    <form id="form-busca" class="form-busca">
+      <div class="campo">
+        <label for="busca-id">ID</label>
+        <input type="number" id="busca-id" min="1" placeholder="#" />
+      </div>
+      <div class="campo campo-flex">
+        <label for="busca-termo">Solicitante ou descrição</label>
+        <input type="text" id="busca-termo" placeholder="Buscar por texto..." />
+      </div>
+      <div class="campo">
+        <label for="busca-situacao">Situação</label>
+        <select id="busca-situacao">
+          <option value="">Todas</option>
+          <option value="aberto">Aberto</option>
+          <option value="em_atendimento">Em atendimento</option>
+          <option value="encerrado">Encerrado</option>
+        </select>
+      </div>
+      <div class="acoes">
+        <button type="submit" class="btn btn-secundario">Buscar</button>
+        <button type="button" id="btn-limpar-busca" class="btn btn-link">Limpar</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- Lista de chamados -->
+  <section class="card">
+    <div class="secao-header">
+      <h2>Chamados</h2>
+      <button id="btn-atualizar" class="btn btn-link" title="Atualizar lista">↻ Atualizar</button>
+    </div>
+    <div id="lista-chamados" class="lista-chamados">
+      <p class="vazio">Carregando chamados...</p>
+    </div>
+  </section>
+
+</main>
+
+<!-- Modal de detalhes / alteração de situação / atendimento -->
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div class="modal">
+    <button id="modal-fechar" class="modal-fechar" aria-label="Fechar">&times;</button>
+    <div id="modal-conteudo"></div>
+  </div>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

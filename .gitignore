@@ -1,0 +1,24 @@
+# Dependências
+node_modules/
+
+# Variáveis de ambiente (contém configuração local, nunca versionar)
+.env
+
+# Banco de dados SQLite (dados locais, gerados automaticamente pela aplicação)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+npm-debug.log*
+*.log
+
+# Arquivos de sistema operacional
+.DS_Store
+Thumbs.db
+
+# Editores / IDEs
+.vscode/
+.idea/
+*.swp
