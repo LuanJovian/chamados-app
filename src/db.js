@@ -1,112 +1,86 @@
 // src/db.js
-// Persistência em SQLite: um único arquivo local, sem necessidade de
-// instalar/configurar um servidor de banco de dados nem lidar com
-// usuário/senha. Ideal para rodar em qualquer computador (inclusive
-// os de laboratório/curso, sem permissões administrativas).
+// Persistência em ARQUIVO (JSON local), usando apenas o módulo `fs`
+// nativo do Node — nenhuma dependência de módulo nativo/binário
+// compilado. Isso evita qualquer problema de compatibilidade de
+// SO/arquitetura (o motivo desta escolha: bancos como SQLite via
+// binário nativo podem falhar de forma imprevisível em computadores
+// de laboratório sem permissão para instalar runtimes do sistema).
+//
+// Estratégia: todo o estado (chamados + atendimentos) é mantido em
+// memória e persistido em disco a cada escrita, de forma atômica
+// (grava em arquivo temporário e troca o nome só depois de concluído,
+// para nunca deixar o arquivo principal corrompido pela metade).
 
-const path = require('path');
 const fs = require('fs');
-const Database = require('better-sqlite3');
+const path = require('path');
 require('dotenv').config();
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'chamados.db');
-const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
+const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, '..', 'data', 'chamados.json');
+const TMP_FILE = `${DATA_FILE}.tmp`;
 
-let db;
+let estado = null; // { proximoIdChamado, proximoIdAtendimento, chamados: [], atendimentos: [] }
+
+function estadoInicial() {
+  return {
+    proximoIdChamado: 1,
+    proximoIdAtendimento: 1,
+    chamados: [],
+    atendimentos: [],
+  };
+}
 
 /**
- * Abre (ou cria) o arquivo de banco e aplica o schema.
- * Qualquer problema de acesso ao arquivo (pasta sem permissão de
- * escrita, disco cheio, caminho inválido etc.) é tratado aqui como
- * "armazenamento indisponível", sem derrubar o processo.
+ * Carrega o arquivo de dados na memória (criando-o se ainda não existir).
+ * Qualquer problema de acesso ao arquivo/pasta (permissão negada, disco
+ * cheio, caminho inválido, JSON corrompido etc.) é tratado aqui: o
+ * servidor continua de pé, mas toda operação de dados vai reportar
+ * "armazenamento indisponível" até o problema ser corrigido.
  */
-function conectar() {
+function inicializar() {
   try {
-    const pasta = path.dirname(DB_PATH);
+    const pasta = path.dirname(DATA_FILE);
     if (!fs.existsSync(pasta)) {
       fs.mkdirSync(pasta, { recursive: true });
     }
 
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');   // melhora concorrência leitura/escrita em arquivo
-    db.pragma('foreign_keys = ON');
+    if (fs.existsSync(DATA_FILE)) {
+      const bruto = fs.readFileSync(DATA_FILE, 'utf8');
+      estado = bruto.trim() ? JSON.parse(bruto) : estadoInicial();
+    } else {
+      estado = estadoInicial();
+      persistir();
+    }
 
-    const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
-    db.exec(schema);
-
-    console.log(`[db] Banco SQLite pronto em: ${DB_PATH}`);
+    console.log(`[db] Armazenamento em arquivo pronto em: ${DATA_FILE}`);
   } catch (err) {
-    console.error('[db] Falha ao abrir/inicializar o banco SQLite:', err.message);
-    db = null; // toda query subsequente vai reportar "indisponível"
+    console.error('[db] Falha ao abrir/inicializar o arquivo de dados:', err.message);
+    estado = null;
   }
 }
 
-conectar();
+inicializar();
 
-/**
- * Códigos típicos de indisponibilidade do arquivo de banco no SQLite:
- * banco ocupado por outro processo, disco cheio, arquivo bloqueado/corrompido,
- * sem permissão de escrita, ou o banco nem chegou a abrir na inicialização.
- */
-function isStorageError(err) {
-  const codigos = [
-    'SQLITE_BUSY', 'SQLITE_LOCKED', 'SQLITE_IOERR', 'SQLITE_CANTOPEN',
-    'SQLITE_CORRUPT', 'SQLITE_READONLY', 'SQLITE_FULL', 'SQLITE_NOTADB',
-    'SQLITE_PROTOCOL', 'SQLITE_PERM',
-  ];
-  return !!(err && err.code && codigos.includes(err.code));
-}
-
-function garantirConexao() {
-  if (!db) {
+function garantirDisponivel() {
+  if (!estado) {
     const err = new Error('Recurso de armazenamento indisponível no momento.');
     err.storageUnavailable = true;
     throw err;
   }
 }
 
-/** SELECT que retorna várias linhas. */
-function all(sql, params = []) {
-  garantirConexao();
+/** Grava o estado atual no arquivo, de forma atômica. */
+function persistir() {
   try {
-    return db.prepare(sql).all(...params);
-  } catch (err) {
-    throw tratarErro(err);
-  }
-}
-
-/** SELECT que retorna uma única linha (ou undefined). */
-function get(sql, params = []) {
-  garantirConexao();
-  try {
-    return db.prepare(sql).get(...params);
-  } catch (err) {
-    throw tratarErro(err);
-  }
-}
-
-/** INSERT/UPDATE/DELETE. Retorna { lastInsertRowid, changes }. */
-function run(sql, params = []) {
-  garantirConexao();
-  try {
-    return db.prepare(sql).run(...params);
-  } catch (err) {
-    throw tratarErro(err);
-  }
-}
-
-/** Executa uma função dentro de uma transação SQLite. */
-function transacao(fn) {
-  garantirConexao();
-  try {
-    return db.transaction(fn)();
+    fs.writeFileSync(TMP_FILE, JSON.stringify(estado, null, 2), 'utf8');
+    fs.renameSync(TMP_FILE, DATA_FILE);
   } catch (err) {
     throw tratarErro(err);
   }
 }
 
 function tratarErro(err) {
-  if (isStorageError(err)) {
+  const codigosArmazenamento = ['EACCES', 'EPERM', 'ENOSPC', 'EROFS', 'ENOENT', 'EIO'];
+  if (err && codigosArmazenamento.includes(err.code)) {
     const storageErr = new Error('Recurso de armazenamento indisponível no momento.');
     storageErr.storageUnavailable = true;
     storageErr.cause = err;
@@ -115,9 +89,29 @@ function tratarErro(err) {
   return err;
 }
 
-function checkConnection() {
-  garantirConexao();
-  db.prepare('SELECT 1').get();
+/**
+ * Executa `fn` recebendo o estado atual (mutável) e, se `fn` não lançar
+ * erro, persiste o resultado em disco. Usado para toda operação de
+ * escrita (criar chamado, mudar situação, registrar atendimento) —
+ * garante que a leitura, a mutação e a gravação aconteçam de forma
+ * consistente, já que o Node roda essas chamadas de forma síncrona
+ * e single-threaded.
+ */
+function escrever(fn) {
+  garantirDisponivel();
+  const resultado = fn(estado);
+  persistir();
+  return resultado;
 }
 
-module.exports = { all, get, run, transacao, checkConnection };
+/** Leitura simples do estado atual, sem gravar nada. */
+function ler(fn) {
+  garantirDisponivel();
+  return fn(estado);
+}
+
+function checkConnection() {
+  garantirDisponivel();
+}
+
+module.exports = { escrever, ler, checkConnection };

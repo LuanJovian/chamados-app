@@ -4,11 +4,8 @@ node_modules/
 # Variáveis de ambiente (contém configuração local, nunca versionar)
 .env
 
-# Banco de dados SQLite (dados locais, gerados automaticamente pela aplicação)
+# Dados da aplicação (arquivo JSON gerado automaticamente pela aplicação)
 data/
-*.db
-*.db-shm
-*.db-wal
 
 # Logs
 npm-debug.log*

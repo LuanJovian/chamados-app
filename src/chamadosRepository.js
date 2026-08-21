@@ -1,8 +1,8 @@
 // src/chamadosRepository.js
 // Regras de negócio + acesso a dados relacionados a chamados.
-// Persistência em SQLite (via src/db.js), acesso síncrono internamente,
-// mas todas as funções aqui continuam expostas como `async` para manter
-// a mesma interface usada pelas rotas (server.js).
+// Persistência em arquivo JSON local (via src/db.js) — as operações
+// de filtro/ordenação que antes eram feitas em SQL agora são feitas
+// aqui mesmo, em JavaScript puro, sobre os arrays em memória.
 
 const db = require('./db');
 
@@ -64,38 +64,52 @@ async function criar({ solicitante, descricao }) {
   const solicitanteLimpo = String(solicitante).trim();
   const descricaoLimpa = String(descricao).trim();
 
-  const info = db.run(
-    `INSERT INTO chamados (solicitante, descricao, situacao) VALUES (?, ?, 'aberto')`,
-    [solicitanteLimpo, descricaoLimpa]
-  );
-  return db.get('SELECT * FROM chamados WHERE id = ?', [info.lastInsertRowid]);
+  return db.escrever((estado) => {
+    const chamado = {
+      id: estado.proximoIdChamado++,
+      solicitante: solicitanteLimpo,
+      descricao: descricaoLimpa,
+      data_abertura: new Date().toISOString(),
+      situacao: 'aberto',
+      data_encerramento: null,
+    };
+    estado.chamados.push(chamado);
+    return { ...chamado };
+  });
 }
 
 /** Consultar todos os chamados, com filtros opcionais (usado também para localizar). */
 async function listar({ situacao, solicitante, id, termo } = {}) {
-  const condicoes = [];
-  const params = [];
+  if (situacao) validarSituacao(situacao);
 
-  if (id !== undefined && id !== null && id !== '') {
-    condicoes.push('id = ?');
-    params.push(id);
-  }
-  if (situacao) {
-    validarSituacao(situacao);
-    condicoes.push('situacao = ?');
-    params.push(situacao);
-  }
-  if (solicitante) {
-    condicoes.push('LOWER(solicitante) LIKE LOWER(?)');
-    params.push(`%${solicitante}%`);
-  }
-  if (termo) {
-    condicoes.push('(LOWER(descricao) LIKE LOWER(?) OR LOWER(solicitante) LIKE LOWER(?))');
-    params.push(`%${termo}%`, `%${termo}%`);
-  }
+  return db.ler((estado) => {
+    let resultado = estado.chamados;
 
-  const where = condicoes.length ? `WHERE ${condicoes.join(' AND ')}` : '';
-  return db.all(`SELECT * FROM chamados ${where} ORDER BY id DESC`, params);
+    if (id !== undefined && id !== null && id !== '') {
+      const idNum = Number(id);
+      resultado = resultado.filter((c) => c.id === idNum);
+    }
+    if (situacao) {
+      resultado = resultado.filter((c) => c.situacao === situacao);
+    }
+    if (solicitante) {
+      const termoBusca = solicitante.toLowerCase();
+      resultado = resultado.filter((c) => c.solicitante.toLowerCase().includes(termoBusca));
+    }
+    if (termo) {
+      const termoBusca = termo.toLowerCase();
+      resultado = resultado.filter(
+        (c) =>
+          c.descricao.toLowerCase().includes(termoBusca) ||
+          c.solicitante.toLowerCase().includes(termoBusca)
+      );
+    }
+
+    return resultado
+      .slice()
+      .sort((a, b) => b.id - a.id)
+      .map((c) => ({ ...c }));
+  });
 }
 
 /** Localizar um chamado específico pelo identificador (consulta pontual). */
@@ -107,18 +121,24 @@ async function buscarPorId(id) {
 
 /** Registrar uma informação/andamento de atendimento (sem alterar situação). */
 async function registrarAtendimento(chamadoId, { atendente, observacao }) {
-  const chamado = buscarChamadoBruto(chamadoId);
-
   if (!observacao || !String(observacao).trim()) {
     throw new ErroValidacao('O campo "observacao" é obrigatório para registrar o atendimento.');
   }
 
-  const info = db.run(
-    `INSERT INTO atendimentos (chamado_id, atendente, observacao, situacao_anterior, situacao_nova)
-     VALUES (?, ?, ?, ?, ?)`,
-    [chamado.id, atendente ? String(atendente).trim() : null, String(observacao).trim(), chamado.situacao, chamado.situacao]
-  );
-  return db.get('SELECT * FROM atendimentos WHERE id = ?', [info.lastInsertRowid]);
+  return db.escrever((estado) => {
+    const chamado = encontrarChamado(estado, chamadoId);
+    const registro = {
+      id: estado.proximoIdAtendimento++,
+      chamado_id: chamado.id,
+      data_registro: new Date().toISOString(),
+      atendente: atendente ? String(atendente).trim() : null,
+      observacao: String(observacao).trim(),
+      situacao_anterior: chamado.situacao,
+      situacao_nova: chamado.situacao,
+    };
+    estado.atendimentos.push(registro);
+    return { ...registro };
+  });
 }
 
 /**
@@ -129,46 +149,44 @@ async function registrarAtendimento(chamadoId, { atendente, observacao }) {
  */
 async function alterarSituacao(chamadoId, { situacaoNova, atendente, observacao }) {
   validarSituacao(situacaoNova);
-  const chamado = buscarChamadoBruto(chamadoId);
 
-  const permitido = TRANSICOES_PERMITIDAS[chamado.situacao] || [];
-  if (chamado.situacao === situacaoNova) {
-    throw new ErroValidacao(`O chamado #${chamado.id} já está na situação "${situacaoNova}".`);
-  }
-  if (!permitido.includes(situacaoNova)) {
-    throw new ErroValidacao(
-      `Transição inválida: não é possível mudar o chamado #${chamado.id} de "${chamado.situacao}" para "${situacaoNova}".`,
-      { situacaoAtual: chamado.situacao, transicoesPermitidas: permitido }
-    );
-  }
+  return db.escrever((estado) => {
+    const chamado = encontrarChamado(estado, chamadoId);
 
-  return db.transacao(() => {
+    const permitido = TRANSICOES_PERMITIDAS[chamado.situacao] || [];
+    if (chamado.situacao === situacaoNova) {
+      throw new ErroValidacao(`O chamado #${chamado.id} já está na situação "${situacaoNova}".`);
+    }
+    if (!permitido.includes(situacaoNova)) {
+      throw new ErroValidacao(
+        `Transição inválida: não é possível mudar o chamado #${chamado.id} de "${chamado.situacao}" para "${situacaoNova}".`,
+        { situacaoAtual: chamado.situacao, transicoesPermitidas: permitido }
+      );
+    }
+
+    const situacaoAnterior = chamado.situacao;
     const encerrando = situacaoNova === 'encerrado';
-    const reabrindo = chamado.situacao === 'encerrado' && situacaoNova === 'aberto';
+    const reabrindo = situacaoAnterior === 'encerrado' && situacaoNova === 'aberto';
 
-    const dataEncerramento = encerrando
-      ? new Date().toISOString()
-      : reabrindo
-        ? null
-        : chamado.data_encerramento;
-
-    db.run('UPDATE chamados SET situacao = ?, data_encerramento = ? WHERE id = ?', [
-      situacaoNova,
-      dataEncerramento,
-      chamado.id,
-    ]);
+    chamado.situacao = situacaoNova;
+    if (encerrando) chamado.data_encerramento = new Date().toISOString();
+    else if (reabrindo) chamado.data_encerramento = null;
 
     const nota = observacao && observacao.trim()
       ? observacao.trim()
-      : `Situação alterada de "${chamado.situacao}" para "${situacaoNova}".`;
+      : `Situação alterada de "${situacaoAnterior}" para "${situacaoNova}".`;
 
-    db.run(
-      `INSERT INTO atendimentos (chamado_id, atendente, observacao, situacao_anterior, situacao_nova)
-       VALUES (?, ?, ?, ?, ?)`,
-      [chamado.id, atendente ? atendente.trim() : null, nota, chamado.situacao, situacaoNova]
-    );
+    estado.atendimentos.push({
+      id: estado.proximoIdAtendimento++,
+      chamado_id: chamado.id,
+      data_registro: new Date().toISOString(),
+      atendente: atendente ? String(atendente).trim() : null,
+      observacao: nota,
+      situacao_anterior: situacaoAnterior,
+      situacao_nova: situacaoNova,
+    });
 
-    return db.get('SELECT * FROM chamados WHERE id = ?', [chamado.id]);
+    return { ...chamado };
   });
 }
 
@@ -183,14 +201,25 @@ async function reabrir(chamadoId, { atendente, observacao } = {}) {
 }
 
 function listarAtendimentos(chamadoId) {
-  return db.all('SELECT * FROM atendimentos WHERE chamado_id = ? ORDER BY data_registro ASC', [chamadoId]);
+  return db.ler((estado) =>
+    estado.atendimentos
+      .filter((a) => a.chamado_id === chamadoId)
+      .sort((a, b) => new Date(a.data_registro) - new Date(b.data_registro))
+      .map((a) => ({ ...a }))
+  );
 }
 
 function buscarChamadoBruto(id) {
+  return db.ler((estado) => ({ ...encontrarChamado(estado, id) }));
+}
+
+/** Encontra o chamado dentro do estado já carregado (uso interno). */
+function encontrarChamado(estado, id) {
   if (!id || isNaN(Number(id))) {
     throw new ErroValidacao('Identificador de chamado inválido.');
   }
-  const chamado = db.get('SELECT * FROM chamados WHERE id = ?', [id]);
+  const idNum = Number(id);
+  const chamado = estado.chamados.find((c) => c.id === idNum);
   if (!chamado) {
     throw new ErroNaoEncontrado(`Chamado #${id} não encontrado.`);
   }
