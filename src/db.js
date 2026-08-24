@@ -15,7 +15,7 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
-const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, '..', 'data');
+const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, '..', 'data', 'chamados.json');
 const TMP_FILE = `${DATA_FILE}.tmp`;
 
 let estado = null; // { proximoIdChamado, proximoIdAtendimento, chamados: [], atendimentos: [] }
